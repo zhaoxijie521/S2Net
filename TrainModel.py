@@ -24,12 +24,12 @@ all_models = {"S2Net": S2Net, "S3ANet": S3ANet, "SACNet": SACNet, "RCPNet": RCPN
 if __name__ == '__main__':
     # 配置信息(通过设置以下9个变量的值更改程序训练结果)🌎💞🤍💜🧮⭐🚀🌟
     # ********************************************************************************
-    data_index = 0  # 设置其数值,分别为:0⇒(PU)、1⇒(IP)、2⇒(SA)
-    model_name = "CeGCN"
+    data_index = 1  # 设置其数值,分别为:0⇒(PU)、1⇒(IP)、2⇒(SA)
+    model_name = "S2Net"
     is_save_attack_data = False  # 是否保存对抗样本以及噪声数据
     is_save_weight_data = False  # 是否保存模型权重
-    is_save_json_data = False  # 是否覆盖之前的训练结果
-    number = 1  # 训练、攻击的次数
+    is_save_json_data = True  # 是否覆盖之前的训练结果
+    number = 10  # 训练、攻击的次数
     epsilon = 0.05  # 指定扰动幅度,用于在训练结束后打印对应扰动幅度的对抗样本测试结果
     against_train_epsilon = 0.01  # 对抗训练的扰动幅度
     against_train_epoch = 50

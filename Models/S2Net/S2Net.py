@@ -406,7 +406,6 @@ class SpatialGradientSmoothingModule(nn.Module):
 
 class S2Net(nn.Module):
     """🔥🚀🌟🎯✨📈📉⚡⭐
-    Smooth Gradients Network
     Description: This is My model!!!❤️🧡💛💚💙💜🤎🖤🤍💕💞💓💗💖💘💝💟
     """
 

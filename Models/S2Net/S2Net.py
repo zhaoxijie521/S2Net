@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 
 
-class SpectralAdaptiveCorrectionModule(nn.Module):
+class SpectralModule(nn.Module):
     """🚀
     Description: Spectral Adaptive Correction Module
     """
@@ -14,7 +14,6 @@ class SpectralAdaptiveCorrectionModule(nn.Module):
         super().__init__()
         self.eps = eps
         hidden = 256
-
         self.channel_weight = nn.Sequential(nn.MaxPool2d(kernel_size=5, stride=3), nn.Conv2d(num_features, hidden, kernel_size=1, bias=False),
                                             nn.MaxPool2d(kernel_size=3, stride=3),
                                             nn.GELU(), nn.AdaptiveAvgPool2d(1), nn.Conv2d(hidden, num_features, kernel_size=1, bias=False), nn.Sigmoid())
@@ -38,113 +37,54 @@ class SpectralAdaptiveCorrectionModule(nn.Module):
         return result
 
 
-class FrequencyDomainGlobalPerceptionModule(nn.Module):
+class FrequencyModule(nn.Module):
     """
     Description: Frequency Domain Global Perception Module(频域全局感知模块)
     """
 
-    def __init__(self, in_channel, height, width, kernel_size, is_residual, filter_mode='adaptive', bias=True, hidden=256, cutoff=0.5):
+    def __init__(self, in_channel, height, width, kernel_size, hidden=256):
         """
-        function   : Initialize
-        in_channel : 输入数据通道数
-        height     : 输入图像高度
-        width      : 输入图像宽度
-        kernel_size: 卷积核大小
-        is_residual: 是否设置残差连接
-        filter_mode: 滤波模式:'low'==>低通滤波、'high'==>高通滤波、'adaptive'==>自适应滤波
-        bias       : 是否设置偏置
-        hidden     : 隐藏层维度
-        cutoff     : 截止频率
+        function    : Initialize
+        in_channel  : 输入数据通道数
+        height      : 输入图像高度
+        width       : 输入图像宽度
+        kernel_size : 卷积核大小
+        bias        : 是否设置偏置
+        hidden      : 隐藏层维度
         """
         super().__init__()
-        # 降噪模块
-        self.ACD1 = SpectralAdaptiveCorrectionModule(in_channel)
-        self.ACD2 = SpectralAdaptiveCorrectionModule(in_channel)
-        # 通道缩放参数
-        self.LayerScale1 = nn.Parameter(0.02 * torch.ones(in_channel), requires_grad=True)
-        self.LayerScale2 = nn.Parameter(0.02 * torch.ones(in_channel), requires_grad=True)
-        # 残差连接权重
-        self.Alpha1 = nn.Parameter(torch.ones(1), requires_grad=True)
-        self.Alpha2 = nn.Parameter(torch.ones(1), requires_grad=True)
-        self.IsResidual = is_residual
-        # 频域滤波设置
+        self.ACD1 = SpectralModule(in_channel)
+        self.ACD2 = SpectralModule(in_channel)
         self.Height = height
         self.Width = width
-        self.FilterMode = filter_mode
-        self.cutoff = cutoff
-        if filter_mode not in ['low', 'high', 'adaptive']:
-            raise ValueError('模式写错辣!!!')
-        if filter_mode in ['low', 'high']:
-            self.ImagConv = nn.Identity()
-            self.RealConv = nn.Identity()
-        else:
-            self.RealConv = nn.Sequential(nn.Conv2d(in_channel, in_channel * 2, kernel_size=3, padding=1),
-                                          nn.Conv2d(in_channel * 2, in_channel * 2, kernel_size=3, padding=1, groups=in_channel * 2),
-                                          nn.GELU(),
-                                          nn.Conv2d(in_channel * 2, in_channel, kernel_size=3, padding=1))
-            self.ImagConv = nn.Sequential(nn.Conv2d(in_channel, in_channel * 2, kernel_size=3, padding=1),
-                                          nn.Conv2d(in_channel * 2, in_channel * 2, kernel_size=3, padding=1, groups=in_channel * 2),
-                                          nn.GELU(),
-                                          nn.Conv2d(in_channel * 2, in_channel, kernel_size=3, padding=1))
-        self.complex_weight = nn.Parameter(torch.rand(1, height, width // 2 + 1, 2, dtype=torch.float32), requires_grad=True)
-        self.register_buffer("mask", self.build_mask())
-        # "前馈神经网络"
-        self.FFN = nn.Sequential(nn.Conv2d(in_channels=in_channel, out_channels=hidden, kernel_size=kernel_size[0], stride=1, padding=kernel_size[0] // 2, bias=bias, groups=8),
-                                 nn.Conv2d(hidden, hidden, kernel_size[1], 1, padding=kernel_size[1] // 2, bias=True, groups=hidden),
-                                 nn.Conv2d(in_channels=hidden, out_channels=in_channel, kernel_size=kernel_size[2], stride=1, padding=kernel_size[2] // 2, bias=bias, groups=8),
+        self.ComplexWeight = nn.Parameter(torch.ones(1, height, width // 2 + 1, 2, dtype=torch.float32) * 0.01, requires_grad=True)
+        self.FFN = nn.Sequential(nn.Conv2d(in_channel, hidden, kernel_size[0], stride=1, padding=kernel_size[0] // 2, groups=8),
+                                 nn.Conv2d(hidden, hidden, kernel_size[1], stride=1, padding=kernel_size[1] // 2, groups=hidden),
+                                 nn.Conv2d(hidden, in_channel, kernel_size[2], stride=1, padding=kernel_size[2] // 2, groups=8),
                                  nn.GELU())
-
-    def build_mask(self):
-        """
-        function: 根据不同的模式生成频率掩码
-        return  : 频率掩码(1,1,height,width)
-        """
-        height, width = self.Height, self.Width // 2 + 1
-        y, x = torch.meshgrid(torch.arange(height), torch.arange(width), indexing='ij')
-        center_y = height // 2
-        center_x = 0
-        r = torch.sqrt((y - center_y) ** 2 + (x - center_x) ** 2)
-        r = r / r.max()
-        if self.FilterMode == 'low':
-            mask = (r <= self.cutoff).float()
-        elif self.FilterMode == 'high':
-            mask = (r >= self.cutoff).float()
-        else:
-            mask = torch.ones_like(r)
-        return mask.unsqueeze(0).unsqueeze(0)
 
     def spectre_former(self, input_data):
         """
-        function  : 频域滤波
-        input_data: (batch,embed,height,width)
-        return    : (batch,embed,height,width)
+        function   : 自适应频域滤波
+        input_data : (batch,embed,height,width)
+        return     : (batch,embed,height,width)
         """
-        input_data = torch.fft.rfft2(input_data, dim=(-2, -1), norm='ortho')
-        real_data = self.RealConv(input_data.real)
-        imag_data = self.ImagConv(input_data.imag)
-        input_data = torch.complex(real_data, imag_data)
-        weight = torch.view_as_complex(self.complex_weight)
-        if self.FilterMode in ['low', 'high']:
-            input_data = input_data * self.mask
-        elif self.FilterMode == 'adaptive':
-            input_data = input_data * weight
-        else:
-            raise ValueError("模式写错辣!!!")
-        input_data = torch.fft.irfft2(input_data, s=(self.Height, self.Width), dim=(-2, -1), norm='ortho')
-        return input_data
+        frequency_data = torch.fft.rfft2(input_data, dim=(-2, -1), norm="ortho")
+        complex_weight = torch.view_as_complex(self.ComplexWeight)
+        frequency_data = frequency_data * complex_weight
+        output_data = torch.fft.irfft2(frequency_data, s=(self.Height, self.Width), dim=(-2, -1), norm="ortho")
+        return output_data
 
     def forward(self, data):
-        """😄
-        function: forward
-        data    : (batch,embed,height,width)
-        return  : (batch,embed,height,width)
         """
-        if self.IsResidual:
-            data = data * self.Alpha1 + self.spectre_former(self.ACD1(data)) * self.LayerScale1.unsqueeze(-1).unsqueeze(-1)
-            data = data * self.Alpha2 + self.FFN(self.ACD2(data)) * self.LayerScale2.unsqueeze(-1).unsqueeze(-1)
-        else:
-            data = self.spectre_former(self.ACD1(data)) * self.LayerScale1.unsqueeze(-1).unsqueeze(-1)
-            data = self.FFN(self.ACD2(data)) * self.LayerScale2.unsqueeze(-1).unsqueeze(-1)
+        function : forward
+        data     : (batch,embed,height,width)
+        return   : (batch,embed,height,width)
+        """
+        data = data + self.spectre_former(data)
+        data = data + self.FFN(self.ACD1(data))
+        # data = data + self.spectre_former(self.ACD1(data))
+        # data = data + self.FFN(data)
         return data
 
 
@@ -153,7 +93,7 @@ class PyramidModule(nn.Module):
     Description: 金字塔层模块
     """
 
-    def __init__(self, in_channel, height, width, hidden=256, filter_mode='adaptive', embed=64, cutoff=0.5):
+    def __init__(self, in_channel, height, width, hidden=256, embed=64):
         """😄
         function  : Initialize
         in_channel: 输入通道数
@@ -164,9 +104,9 @@ class PyramidModule(nn.Module):
         """
         super().__init__()
         # 可变形卷积块
-        self.PreModule1 = nn.Sequential(SpatialGradientSmoothingModule(in_channel, embed, 25, stride=2), SpectralAdaptiveCorrectionModule(embed), nn.GELU())
-        self.PreModule2 = nn.Sequential(SpatialGradientSmoothingModule(embed, embed, 25, stride=2), SpectralAdaptiveCorrectionModule(embed), nn.GELU())
-        self.PreModule3 = nn.Sequential(SpatialGradientSmoothingModule(embed, embed, 25, stride=2), SpectralAdaptiveCorrectionModule(embed), nn.GELU())
+        self.PreModule1 = nn.Sequential(SpatialModule(in_channel, embed, 25, stride=2), SpectralModule(embed), nn.ReLU())
+        self.PreModule2 = nn.Sequential(SpatialModule(embed, embed, 25, stride=2), SpectralModule(embed), nn.ReLU())
+        self.PreModule3 = nn.Sequential(SpatialModule(embed, embed, 25, stride=2), SpectralModule(embed), nn.ReLU())
         # SpectreBlock参数
         height_list, width_list = [height], [width]
         for _ in range(3):
@@ -178,30 +118,13 @@ class PyramidModule(nn.Module):
             setattr(self, f"height{index}", height_list[index])
             setattr(self, f"width{index}", width_list[index])
         # Spectre Block
-        spectre_param1 = dict(in_channel=embed, height=self.height1, width=self.width1, kernel_size=(3, 3, 3), is_residual=True,
-                              filter_mode=filter_mode, bias=True, hidden=hidden, cutoff=cutoff)
-        self.SpectreBlock1 = nn.Sequential(FrequencyDomainGlobalPerceptionModule(**spectre_param1))
-        spectre_param2 = dict(in_channel=embed, height=self.height2, width=self.width2, kernel_size=(5, 5, 5), is_residual=False,
-                              filter_mode=filter_mode, bias=True, hidden=hidden, cutoff=cutoff)
-        self.SpectreBlock2 = nn.Sequential(FrequencyDomainGlobalPerceptionModule(**spectre_param2))
-        spectre_param3 = dict(in_channel=embed, height=self.height3, width=self.width3, kernel_size=(7, 7, 7), is_residual=False,
-                              filter_mode=filter_mode, bias=True, hidden=hidden, cutoff=cutoff)
-        self.SpectreBlock3 = nn.Sequential(FrequencyDomainGlobalPerceptionModule(**spectre_param3))
-
+        self.SpectreBlock1 = FrequencyModule(in_channel=embed, height=self.height1, width=self.width1, kernel_size=(3, 3, 3), hidden=hidden)
+        self.SpectreBlock2 = FrequencyModule(in_channel=embed, height=self.height2, width=self.width2, kernel_size=(5, 5, 5), hidden=hidden)
+        self.SpectreBlock3 = FrequencyModule(in_channel=embed, height=self.height3, width=self.width3, kernel_size=(7, 7, 7), hidden=hidden)
         # 卷积块
-        self.Conv1 = nn.Sequential(nn.Conv2d(embed, embed, kernel_size=7, padding=3), SpectralAdaptiveCorrectionModule(embed), nn.ReLU())
-        self.Conv2 = nn.Sequential(nn.Conv2d(embed, embed, kernel_size=5, padding=2), SpectralAdaptiveCorrectionModule(embed), nn.ReLU())
-        self.Conv3 = nn.Sequential(nn.Conv2d(embed, in_channel, kernel_size=3, padding=1), SpectralAdaptiveCorrectionModule(in_channel), nn.GELU())
-        # self.Conv1 = nn.Sequential(nn.Conv2d(embed, embed, kernel_size=7, padding=3), nn.ReLU())
-        # self.Conv2 = nn.Sequential(nn.Conv2d(embed, embed, kernel_size=5, padding=2), nn.ReLU())
-        # self.Conv3 = nn.Sequential(nn.Conv2d(embed, in_channel, kernel_size=3, padding=1), nn.GELU())
-        # 系数
-        self.Alpha1 = nn.Parameter(torch.ones(1), requires_grad=True)
-        self.Alpha2 = nn.Parameter(torch.ones(1), requires_grad=True)
-        self.Alpha3 = nn.Parameter(torch.ones(1), requires_grad=True)
-        self.Gama1 = nn.Parameter(torch.ones(1), requires_grad=True)
-        self.Gama2 = nn.Parameter(torch.ones(1), requires_grad=True)
-        self.Gama3 = nn.Parameter(torch.ones(1), requires_grad=True)
+        self.Conv1 = nn.Sequential(nn.Conv2d(embed, embed, kernel_size=7, padding=3), SpectralModule(embed), nn.ReLU())
+        self.Conv2 = nn.Sequential(nn.Conv2d(embed, embed, kernel_size=5, padding=2), SpectralModule(embed), nn.ReLU())
+        self.Conv3 = nn.Sequential(nn.Conv2d(embed, in_channel, kernel_size=3, padding=1), SpectralModule(in_channel), nn.GELU())
 
     def forward(self, input_data):
         """😄
@@ -219,19 +142,19 @@ class PyramidModule(nn.Module):
         spectre3 = self.SpectreBlock3(pre_data3)  # (1,C,H//8,W//8)
         # 残差连结
         mode = 'bilinear'
-        # 第一级
-        up_sample1 = func.interpolate(self.Gama1 * pre_data3 + self.Alpha1 * spectre3, size=(self.height2, self.width2), mode=mode, align_corners=False)
+        # # 第一级
+        up_sample1 = func.interpolate(pre_data3 + spectre3, size=(self.height2, self.width2), mode=mode, align_corners=False)
         residual1 = self.Conv1(up_sample1)
         # 第二级
-        up_sample2 = func.interpolate(self.Gama2 * residual1 + self.Alpha2 * spectre2, size=(self.height1, self.width1), mode=mode, align_corners=False)
+        up_sample2 = func.interpolate(residual1 + spectre2, size=(self.height1, self.width1), mode=mode, align_corners=False)
         residual2 = self.Conv2(up_sample2)
         # 第三级
-        up_sample3 = func.interpolate(self.Gama3 * residual2 + self.Alpha3 * spectre1, size=(self.height0, self.width0), mode=mode, align_corners=False)
+        up_sample3 = func.interpolate(residual2 + spectre1, size=(self.height0, self.width0), mode=mode, align_corners=False)
         residual3 = self.Conv3(up_sample3)
         return residual3
 
 
-class SpatialGradientSmoothingModule(nn.Module):
+class SpatialModule(nn.Module):
     """👍Spatial Gradient Smoothing Module
     Description: 结合可变形卷积(Deformable Convolution)的思想,通过预测采样点的偏移量来动态调整卷积核的采样位置,实现梯度平滑下采样
     """
@@ -245,7 +168,7 @@ class SpatialGradientSmoothingModule(nn.Module):
         stride       : 步长
         bias         : 卷积层是否使用偏置项
         """
-        super(SpatialGradientSmoothingModule, self).__init__()
+        super(SpatialModule, self).__init__()
         self.stride = stride
         self.OffsetConv = nn.Conv2d(in_channel, 2 * sample_number, kernel_size=3, padding=1, stride=stride)  # 预测每个采样点的偏移量
         # 初始化权重为0,使得在训练的初始阶段,预测层不会对输入特征图产生过大的影响
@@ -409,7 +332,7 @@ class S2Net(nn.Module):
     Description: This is My model!!!❤️🧡💛💚💙💜🤎🖤🤍💕💞💓💗💖💘💝💟
     """
 
-    def __init__(self, in_channel, embed, num_class, height, width, filter_mode='adaptive'):
+    def __init__(self, in_channel, embed, num_class, height, width):
         """😄
         function  : Initialize
         in_channel: 输入通道数
@@ -421,9 +344,8 @@ class S2Net(nn.Module):
         super().__init__()
         self.embed = embed
         self.Stem = nn.Sequential(nn.Conv2d(in_channel, embed, kernel_size=1, padding=0), nn.GELU())
-        self.Pyramid = PyramidModule(in_channel=embed, height=height, width=width, embed=embed, filter_mode=filter_mode)
-        self.MLP = nn.Sequential(nn.Conv2d(embed, 32, 5, 1, 2),
-                                 nn.Conv2d(32, num_class, kernel_size=3, padding=1, stride=1))
+        self.Pyramid = PyramidModule(in_channel=embed, height=height, width=width, embed=embed)
+        self.MLP = nn.Conv2d(embed, num_class, 3, 1, 1)
 
     def forward(self, input_data):
         """😄
@@ -434,7 +356,6 @@ class S2Net(nn.Module):
         stem_data = self.Stem(input_data)
         pyramid = self.Pyramid(stem_data)
         result = self.MLP(pyramid)  # (1,num_class,height,width)
-        # result = func.softmax(result, dim=1)   # 添加这一行训练轮数设置为1000
         return result
 
 
